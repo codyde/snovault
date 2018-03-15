@@ -145,7 +145,7 @@ def index(request):
         invalidated = []
     # OPTIONAL: restart support
 
-    doc = state.get_initial_state()  # get after checking priority!
+    result = state.get_initial_state()  # get after checking priority!
 
     if xmin == -1 or len(invalidated) == 0:
         xmin = get_current_xmin(request)
@@ -158,12 +158,12 @@ def index(request):
             if status['found'] and 'xmin' in status['_source']:
                 last_xmin = status['_source']['xmin']
         if last_xmin is None:  # still!
-            if 'last_xmin' in doc:
-                last_xmin = doc['last_xmin']
-            elif 'xmin' in doc and doc['xmin'] < xmin:
-                last_xmin = doc['state']
+            if 'last_xmin' in result:
+                last_xmin = result['last_xmin']
+            elif 'xmin' in result and result['xmin'] < xmin:
+                last_xmin = result['state']
 
-        doc.update(
+        result.update(
             xmin=xmin,
             last_xmin=last_xmin,
         )
@@ -174,7 +174,7 @@ def index(request):
 
         flush = False
         if last_xmin is None:
-            doc['types'] = types = request.json.get('types', None)
+            result['types'] = types = request.json.get('types', None)
             invalidated = list(all_uuids(request.registry, types))
             flush = True
         else:
@@ -200,10 +200,10 @@ def index(request):
             if invalidated:        # reindex requested, treat like updated
                 updated |= invalidated
 
-            doc['txn_count'] = txn_count
+            result['txn_count'] = txn_count
             if txn_count == 0 and len(invalidated) == 0:
                 state.send_notices()
-                return doc
+                return result
 
             (related_set, full_reindex) = get_related_uuids(request, es, updated, renamed)
             if full_reindex:
@@ -211,7 +211,7 @@ def index(request):
                 flush = True
             else:
                 invalidated = related_set | updated
-                doc.update(
+                result.update(
                     max_xid=max_xid,
                     renamed=renamed,
                     updated=updated,
@@ -220,7 +220,7 @@ def index(request):
                     txn_count=txn_count
                 )
                 if first_txn is not None:
-                    doc['first_txn_timestamp'] = first_txn.isoformat()
+                    result['first_txn_timestamp'] = first_txn.isoformat()
 
             if invalidated and not dry_run:
                 # Exporting a snapshot mints a new xid, so only do so when required.
@@ -234,29 +234,29 @@ def index(request):
             # Note: undones should be added before, because those uuids will (hopefully) be indexed in this cycle
             state.prep_for_followup(xmin, invalidated)
 
-        doc = state.start_cycle(invalidated, doc)
+        result = state.start_cycle(invalidated, result)
 
         # Do the work...
 
         errors = indexer.update_objects(request, invalidated, xmin, snapshot_id, restart)
 
-        doc = state.finish_cycle(doc,errors)
+        result = state.finish_cycle(result,errors)
 
         if errors:
-            doc['errors'] = errors
+            result['errors'] = errors
 
         if record:
             try:
-                es.index(index=INDEX, doc_type='meta', body=doc, id='indexing')
+                es.index(index=INDEX, result_type='meta', body=result, id='indexing')
             except Exception as exc:
-                error_messages = copy.deepcopy(doc['errors'])
-                del doc['errors']
-                es.index(index=INDEX, doc_type='meta', body=doc, id='indexing')
+                error_messages = copy.deepcopy(result['errors'])
+                del result['errors']
+                es.index(index=INDEX, result_type='meta', body=result, id='indexing')
                 for item in error_messages:
                     if 'error_message' in item:
                         log.error('{}: Indexing error for {}, error message: {}'.format(exc, item['uuid'], item['error_message']))
                         item['error_message'] = "Error occured during indexing, check the logs"
-                doc['errors'] = error_messages
+                result['errors'] = error_messages
 
         es.indices.refresh('_all')
         if flush:
@@ -266,10 +266,10 @@ def index(request):
                 pass
 
     if first_txn is not None:
-        doc['txn_lag'] = str(datetime.datetime.now(pytz.utc) - first_txn)
+        result['txn_lag'] = str(datetime.datetime.now(pytz.utc) - first_txn)
 
     state.send_notices()
-    return doc
+    return result
 
 
 def get_current_xmin(request):
