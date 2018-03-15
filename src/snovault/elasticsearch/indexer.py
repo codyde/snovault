@@ -1,13 +1,11 @@
 from elasticsearch.exceptions import (
     ConflictError,
     ConnectionError,
-    NotFoundError,
     TransportError,
 )
 from pyramid.view import view_config
 from sqlalchemy.exc import StatementError
 from snovault import (
-    COLLECTIONS,
     DBSESSION,
     STORAGE
 )
@@ -22,7 +20,6 @@ from .interfaces import (
 from .indexer_state import (
     IndexerState,
     all_uuids,
-    all_types,
     SEARCH_MAX
 )
 import datetime
@@ -30,8 +27,6 @@ import logging
 import pytz
 import time
 import copy
-import json
-import requests
 
 es_logger = logging.getLogger("elasticsearch")
 es_logger.setLevel(logging.ERROR)
@@ -247,11 +242,11 @@ def index(request):
 
         if record:
             try:
-                es.index(index=INDEX, result_type='meta', body=result, id='indexing')
+                es.index(index=INDEX, doc_type='meta', body=result, id='indexing')
             except Exception as exc:
                 error_messages = copy.deepcopy(result['errors'])
                 del result['errors']
-                es.index(index=INDEX, result_type='meta', body=result, id='indexing')
+                es.index(index=INDEX, doc_type='meta', body=result, id='indexing')
                 for item in error_messages:
                     if 'error_message' in item:
                         log.error('{}: Indexing error for {}, error message: {}'.format(exc, item['uuid'], item['error_message']))
