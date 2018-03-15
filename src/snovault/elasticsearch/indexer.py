@@ -38,11 +38,15 @@ es_logger.setLevel(logging.ERROR)
 log = logging.getLogger(__name__)
 MAX_CLAUSES_FOR_ES = 8192
 
+f = open('/srv/encoded/indexing.log', 'a')
+
+
 def includeme(config):
     config.add_route('index', '/index')
     config.scan(__name__)
     registry = config.registry
     registry[INDEXER] = Indexer(registry)
+
 
 def get_related_uuids(request, es, updated, renamed):
     '''Returns (set of uuids, True if all_uuids)'''
@@ -57,13 +61,13 @@ def get_related_uuids(request, es, updated, renamed):
     es.indices.refresh('_all')
 
     # TODO: batching may allow us to drive a partial reindexing much greater than 99999
-    #BATCH_COUNT = 100  # NOTE: 100 random uuids returned > 99999 results!
-    #beg = 0
-    #end = BATCH_COUNT
-    #related_set = set()
-    #updated_list = list(updated)  # Must be lists
-    #renamed_list = list(renamed)
-    #while updated_count > beg or renamed_count > beg:
+    # BATCH_COUNT = 100  # NOTE: 100 random uuids returned > 99999 docs!
+    # beg = 0
+    # end = BATCH_COUNT
+    # related_set = set()
+    # updated_list = list(updated)  # Must be lists
+    # renamed_list = list(renamed)
+    # while updated_count > beg or renamed_count > beg:
     #    if updated_count > end or beg > 0:
     #        log.error('Indexer looking for related uuids by BATCH[%d,%d]' % (beg, end))
     #
@@ -79,7 +83,6 @@ def get_related_uuids(request, es, updated, renamed):
     #
     #    beg += BATCH_COUNT
     #    end += BATCH_COUNT
-
 
     res = es.search(index='_all', size=SEARCH_MAX, request_timeout=60, body={
         'query': {
@@ -111,7 +114,6 @@ def get_related_uuids(request, es, updated, renamed):
     return (related_set, False)
 
 
-
 @view_config(route_name='index', request_method='POST', permission="index")
 def index(request):
     INDEX = request.registry.settings['snovault.elasticsearch.index']
@@ -126,12 +128,12 @@ def index(request):
     connection = session.connection()
     first_txn = None
     snapshot_id = None
-    restart=False
+    restart = False
     invalidated = []
     xmin = -1
 
     # Currently 2 possible followup indexers (base.ini [set stage_for_followup = vis_indexer, region_indexer])
-    stage_for_followup = list(request.registry.settings.get("stage_for_followup", '').replace(' ','').split(','))
+    stage_for_followup = list(request.registry.settings.get("stage_for_followup", '').replace(' ', '').split(','))
 
     # May have undone uuids from prior cycle
     state = IndexerState(es, INDEX, followups=stage_for_followup)
@@ -143,7 +145,7 @@ def index(request):
         invalidated = []
     # OPTIONAL: restart support
 
-    result = state.get_initial_state()  # get after checking priority!
+    doc = state.get_initial_state()  # get after checking priority!
 
     if xmin == -1 or len(invalidated) == 0:
         xmin = get_current_xmin(request)
@@ -156,12 +158,12 @@ def index(request):
             if status['found'] and 'xmin' in status['_source']:
                 last_xmin = status['_source']['xmin']
         if last_xmin is None:  # still!
-            if 'last_xmin' in result:
-                last_xmin = result['last_xmin']
-            elif 'xmin' in result and result['xmin'] < xmin:
-                last_xmin = result['state']
+            if 'last_xmin' in doc:
+                last_xmin = doc['last_xmin']
+            elif 'xmin' in doc and doc['xmin'] < xmin:
+                last_xmin = doc['state']
 
-        result.update(
+        doc.update(
             xmin=xmin,
             last_xmin=last_xmin,
         )
@@ -172,7 +174,7 @@ def index(request):
 
         flush = False
         if last_xmin is None:
-            result['types'] = types = request.json.get('types', None)
+            doc['types'] = types = request.json.get('types', None)
             invalidated = list(all_uuids(request.registry, types))
             flush = True
         else:
@@ -198,10 +200,10 @@ def index(request):
             if invalidated:        # reindex requested, treat like updated
                 updated |= invalidated
 
-            result['txn_count'] = txn_count
+            doc['txn_count'] = txn_count
             if txn_count == 0 and len(invalidated) == 0:
                 state.send_notices()
-                return result
+                return doc
 
             (related_set, full_reindex) = get_related_uuids(request, es, updated, renamed)
             if full_reindex:
@@ -209,7 +211,7 @@ def index(request):
                 flush = True
             else:
                 invalidated = related_set | updated
-                result.update(
+                doc.update(
                     max_xid=max_xid,
                     renamed=renamed,
                     updated=updated,
@@ -218,7 +220,7 @@ def index(request):
                     txn_count=txn_count
                 )
                 if first_txn is not None:
-                    result['first_txn_timestamp'] = first_txn.isoformat()
+                    doc['first_txn_timestamp'] = first_txn.isoformat()
 
             if invalidated and not dry_run:
                 # Exporting a snapshot mints a new xid, so only do so when required.
@@ -232,30 +234,29 @@ def index(request):
             # Note: undones should be added before, because those uuids will (hopefully) be indexed in this cycle
             state.prep_for_followup(xmin, invalidated)
 
-        result = state.start_cycle(invalidated, result)
+        doc = state.start_cycle(invalidated, doc)
 
         # Do the work...
 
         errors = indexer.update_objects(request, invalidated, xmin, snapshot_id, restart)
 
-        result = state.finish_cycle(result,errors)
+        doc = state.finish_cycle(doc,errors)
 
         if errors:
-            result['errors'] = errors
+            doc['errors'] = errors
 
         if record:
             try:
-                es.index(index=INDEX, doc_type='meta', body=result, id='indexing')
-            except:
-                error_messages = copy.deepcopy(result['errors'])
-                del result['errors']
-                es.index(index=INDEX, doc_type='meta', body=result, id='indexing')
+                es.index(index=INDEX, doc_type='meta', body=doc, id='indexing')
+            except Exception as exc:
+                error_messages = copy.deepcopy(doc['errors'])
+                del doc['errors']
+                es.index(index=INDEX, doc_type='meta', body=doc, id='indexing')
                 for item in error_messages:
                     if 'error_message' in item:
-                        log.error('Indexing error for {}, error message: {}'.format(item['uuid'], item['error_message']))
+                        log.error('{}: Indexing error for {}, error message: {}'.format(exc, item['uuid'], item['error_message']))
                         item['error_message'] = "Error occured during indexing, check the logs"
-                result['errors'] = error_messages
-
+                doc['errors'] = error_messages
 
         es.indices.refresh('_all')
         if flush:
@@ -265,10 +266,10 @@ def index(request):
                 pass
 
     if first_txn is not None:
-        result['txn_lag'] = str(datetime.datetime.now(pytz.utc) - first_txn)
+        doc['txn_lag'] = str(datetime.datetime.now(pytz.utc) - first_txn)
 
     state.send_notices()
-    return result
+    return doc
 
 
 def get_current_xmin(request):
@@ -291,6 +292,7 @@ def get_current_xmin(request):
     # which is not available in recovery.
     xmin = query.scalar()  # lowest xid that is still in progress
     return xmin
+
 
 class Indexer(object):
     def __init__(self, registry):
@@ -317,14 +319,15 @@ class Indexer(object):
         # if restart:
         #     try:
         #         #if self.es.exists(index=self.index, id=str(uuid), version=xmin, version_type='external_gte'):  # couldn't get exists to work.
-        #         result = self.es.get(index=self.index, id=str(uuid), _source_include='uuid', version=xmin, version_type='external_gte')
-        #         if result.get('_source') is not None:
+        #         doc = self.es.get(index=self.index, id=str(uuid), _source_include='uuid', version=xmin, version_type='external_gte')
+        #         if doc.get('_source') is not None:
         #             return
         #     except:
         #         pass
         # OPTIONAL: restart support
 
         last_exc = None
+        start = time.time()
         try:
             doc = request.embed('/%s/@@index-data/' % uuid, as_user='INDEXER')
         except StatementError:
@@ -334,31 +337,44 @@ class Indexer(object):
             log.error('Error rendering /%s/@@index-data', uuid, exc_info=True)
             last_exc = repr(e)
 
-        if last_exc is None:
-            for backoff in [0, 10, 20, 40, 80]:
-                time.sleep(backoff)
-                try:
-                    self.es.index(
-                        index=doc['item_type'], doc_type=doc['item_type'], body=doc,
-                        id=str(uuid), version=xmin, version_type='external_gte',
-                        request_timeout=30,
-                    )
-                except StatementError:
-                    # Can't reconnect until invalid transaction is rolled back
-                    raise
-                except ConflictError:
-                    log.warning('Conflict indexing %s at version %d', uuid, xmin)
-                    return
-                except (ConnectionError, ReadTimeoutError, TransportError) as e:
-                    log.warning('Retryable error indexing %s: %r', uuid, e)
-                    last_exc = repr(e)
-                except Exception as e:
-                    log.error('Error indexing %s', uuid, exc_info=True)
-                    last_exc = repr(e)
-                    break
-                else:
-                    # Get here on success and outside of try
-                    return
+        es_start = time.time()
+        py_elapsed = es_start - start
+
+        last_exc = None
+        for backoff in [0, 10, 20, 40, 80]:
+            time.sleep(backoff)
+            try:
+                self.es.index(
+                    index=doc['item_type'], doc_type=doc['item_type'], body=doc,
+                    id=str(uuid), version=xmin, version_type='external_gte',
+                    request_timeout=30,
+                )
+            except StatementError:
+                # Can't reconnect until invalid transaction is rolled back
+                raise
+            except ConflictError:
+                log.warning('Conflict indexing %s at version %d', uuid, xmin)
+                return
+            except (ConnectionError, ReadTimeoutError, TransportError) as e:
+                log.warning('Retryable error indexing %s: %r', uuid, e)
+                last_exc = repr(e)
+            except Exception as e:
+                log.error('Error indexing %s', uuid, exc_info=True)
+                last_exc = repr(e)
+                break
+            else:
+                es_elapsed = time.time() - es_start
+                f.write('Indexed {} {} {} {} {} {} {}\n'.format(
+                    doc['paths'][0],
+                    doc['item_type'],
+                    start,
+                    py_elapsed,
+                    es_elapsed,
+                    len(doc['embedded_uuids']),
+                    len(doc['linked_uuids']),
+                ))
+                f.flush()
+                return
 
         timestamp = datetime.datetime.now().isoformat()
         return {'error_message': last_exc, 'timestamp': timestamp, 'uuid': str(uuid)}
