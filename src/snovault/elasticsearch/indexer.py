@@ -117,13 +117,17 @@ def index(request):
     INDEX = request.registry.settings['snovault.elasticsearch.index']
     # Setting request.datastore here only works because routed views are not traversed.
     request.datastore = 'database'
+
     record = request.json.get('record', False)
     dry_run = request.json.get('dry_run', False)
     recovery = request.json.get('recovery', False)
+
     es = request.registry[ELASTIC_SEARCH]
     indexer = request.registry[INDEXER]
     session = request.registry[DBSESSION]()
+
     connection = session.connection()
+
     first_txn = None
     snapshot_id = None
     restart=False
@@ -132,6 +136,7 @@ def index(request):
 
     # Currently 2 possible followup indexers (base.ini [set stage_for_followup = vis_indexer, region_indexer])
     stage_for_followup = list(request.registry.settings.get("stage_for_followup", '').replace(' ','').split(','))
+    print('indexer', 'view config start', stage_for_followup)
 
     # May have undone uuids from prior cycle
     state = IndexerState(es, INDEX, followups=stage_for_followup)
@@ -232,6 +237,7 @@ def index(request):
             # Note: undones should be added before, because those uuids will (hopefully) be indexed in this cycle
             state.prep_for_followup(xmin, invalidated)
 
+        invalidated = invalidated[:1000]
         result = state.start_cycle(invalidated, result)
 
         # Do the work...
