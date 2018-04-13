@@ -234,48 +234,58 @@ def index(request):
                     snapshot_id = connection.execute('SELECT pg_export_snapshot();').scalar()
 
     if invalidated and not dry_run:
-        if len(stage_for_followup) > 0:
-            # Note: undones should be added before, because those uuids will (hopefully) be indexed in this cycle
-            state.prep_for_followup(xmin, invalidated)
-
         invalidated = invalidated[:1000]
-        result = state.start_cycle(invalidated, result)
-
-        # Do the work...
-        print('starting to updates')
+        print('starting to updates', str(len(invalidated)))
         start_time = time.time()
-        errors = indexer.update_objects(request, invalidated, xmin, snapshot_id, restart)
+        result = process_uuids(invalidated, dry_run, stage_for_followup, xmin, state, result, indexer)
         print('update over', '%0.6f' % (time.time() - start_time))
-        result = state.finish_cycle(result,errors)
-
-        if errors:
-            result['errors'] = errors
-
-        if record:
-            try:
-                es.index(index=INDEX, doc_type='meta', body=result, id='indexing')
-            except:
-                error_messages = copy.deepcopy(result['errors'])
-                del result['errors']
-                es.index(index=INDEX, doc_type='meta', body=result, id='indexing')
-                for item in error_messages:
-                    if 'error_message' in item:
-                        log.error('Indexing error for {}, error message: {}'.format(item['uuid'], item['error_message']))
-                        item['error_message'] = "Error occured during indexing, check the logs"
-                result['errors'] = error_messages
-
-
-        es.indices.refresh('_all')
-        if flush:
-            try:
-                es.indices.flush_synced(index='_all')  # Faster recovery on ES restart
-            except ConflictError:
-                pass
-
+        result = post_process_uuids(es, INDEX, result, flush)
     if first_txn is not None:
         result['txn_lag'] = str(datetime.datetime.now(pytz.utc) - first_txn)
-
     state.send_notices()
+    return result
+
+
+def process_uuids(
+        invalidated,
+        dry_run,
+        stage_for_followup,
+        xmin,
+        state,
+        result,
+        indexer,
+)
+    if len(stage_for_followup) > 0:
+        # Note: undones should be added before, because those uuids will (hopefully) be indexed in this cycle
+        state.prep_for_followup(xmin, invalidated)
+    result = state.start_cycle(invalidated, result)
+    # Do the work...
+    errors = indexer.update_objects(request, invalidated, xmin, snapshot_id, restart)
+    result = state.finish_cycle(result,errors)
+    if errors:
+        result['errors'] = errors
+    return result
+
+
+def post_process_uuids(es, INDEX, result, flush):
+    if record:
+        try:
+            es.index(index=INDEX, doc_type='meta', body=result, id='indexing')
+        except:
+            error_messages = copy.deepcopy(result['errors'])
+            del result['errors']
+            es.index(index=INDEX, doc_type='meta', body=result, id='indexing')
+            for item in error_messages:
+                if 'error_message' in item:
+                    log.error('Indexing error for {}, error message: {}'.format(item['uuid'], item['error_message']))
+                    item['error_message'] = "Error occured during indexing, check the logs"
+            result['errors'] = error_messages
+    es.indices.refresh('_all')
+    if flush:
+        try:
+            es.indices.flush_synced(index='_all')  # Faster recovery on ES restart
+        except ConflictError:
+            pass
     return result
 
 
