@@ -74,12 +74,6 @@ def run(testapp, timeout=DEFAULT_TIMEOUT, dry_run=False, path='/index', control=
         str_cnt = str(cnt)
         with conn.cursor() as cursor:
             while True:
-                is_index_path = False
-                if path == '/index':
-                    cnt += 1
-                    str_cnt = str(cnt)
-                    is_index_path = True
-                if is_index_path: print(str_cnt, 'es_index_listener', 'while start')
                 if not listening:
                     # cannot execute LISTEN during recovery
                     cursor.execute("""SELECT pg_is_in_recovery();""")
@@ -153,7 +147,6 @@ def run(testapp, timeout=DEFAULT_TIMEOUT, dry_run=False, path='/index', control=
                     xid = int(notify.payload)
                     max_xid = max(max_xid, xid)
                     log.debug('NOTIFY %s, %s', notify.channel, notify.payload)
-                if is_index_path: print(str_cnt, 'es_index_listener end')
     finally:
         connection.close()
 
