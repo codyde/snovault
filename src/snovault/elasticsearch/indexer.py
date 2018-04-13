@@ -114,6 +114,7 @@ def get_related_uuids(request, es, updated, renamed):
 
 @view_config(route_name='index', request_method='POST', permission="index")
 def index(request):
+    print('index view_config')
     INDEX = request.registry.settings['snovault.elasticsearch.index']
     # Setting request.datastore here only works because routed views are not traversed.
     request.datastore = 'database'
@@ -241,9 +242,10 @@ def index(request):
         result = state.start_cycle(invalidated, result)
 
         # Do the work...
-
+        print('starting to updates')
+        start_time = time.time()
         errors = indexer.update_objects(request, invalidated, xmin, snapshot_id, restart)
-
+        print('update over', '%0.6f' % (time.time() - start_time))
         result = state.finish_cycle(result,errors)
 
         if errors:
