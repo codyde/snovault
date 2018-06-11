@@ -228,6 +228,8 @@ def index(request):
                     snapshot_id = connection.execute('SELECT pg_export_snapshot();').scalar()
 
     if invalidated and not dry_run:
+        # DEBUG: Cast to list and limit.  0 limit is False
+        invalidated = debug_cast_to_list_set_limit(invalidated, 0)
         if len(stage_for_followup) > 0:
             # Note: undones should be added before, because those uuids will (hopefully) be indexed in this cycle
             state.prep_for_followup(xmin, invalidated)
@@ -269,6 +271,17 @@ def index(request):
 
     state.send_notices()
     return result
+
+
+def debug_cast_to_list_set_limit(invalidated, limit):
+    if limit:
+        new_invalid = []
+        for index, item in enumerate(invalidated):
+            new_invalid.append(item)
+            if index >= limit:
+                break
+        invalidated = new_invalid
+    return invalidated
 
 
 def get_current_xmin(request):
