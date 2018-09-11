@@ -88,13 +88,13 @@ class IndexerState(object):
         self.put_obj(self._is_reindex_key, {'is_reindex': True})
 
     def log_reindex_init_state(self):
-    # Must call after priority cycle
-    if self.is_reindexing and self.is_initial_indexing:
-        log.info('%s is reindexing all', self.title)
-    elif self.is_reindexing:
-        log.info('%s is reindexing', self.title)
-    elif self.is_initial_indexing:
-        log.info('%s is initially indexing', self.title)
+        # Must call after priority cycle
+        if self.is_reindexing and self.is_initial_indexing:
+            log.info('%s is reindexing all', self.title)
+        elif self.is_reindexing:
+            log.info('%s is reindexing', self.title)
+        elif self.is_initial_indexing:
+            log.info('%s is initially indexing', self.title)
 
     # Private-ish primitives...
     def get_obj(self, id, doc_type='meta'):
