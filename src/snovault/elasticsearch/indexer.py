@@ -35,7 +35,7 @@ import requests
 
 es_logger = logging.getLogger("elasticsearch")
 es_logger.setLevel(logging.ERROR)
-log = logging.getLogger(__name__)
+log = logging.getLogger('snovault.elasticsearch.es_index_listener')  # TODO: Add to different ticket
 MAX_CLAUSES_FOR_ES = 8192
 
 def includeme(config):
